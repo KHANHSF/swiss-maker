@@ -3,28 +3,32 @@ import { URLSearchParams } from "url";
 
 export const config = {
   server: "https://lichess.org",
-  team: "AggressiveBot",               // Team-ID
-  oauthToken: process.env.OAUTH_TOKEN!, // Token từ GitHub Secrets
-  daysInAdvance: 1,                     // số ngày tạo trước
-  dryRun: false,                        // true = chỉ debug, false = tạo thật
+  teamId: "AggressiveBotTeamID",  // <- đây phải là **ID team**, không phải tên
+  oauthToken: process.env.OAUTH_TOKEN!,
+  daysInAdvance: 1,
+  dryRun: false,
   arena: {
     name: () => "Hourly Ultrabullet",
     description: (nextLink?: string) => `Next: ${nextLink ?? "coming soon"}`,
-    clockTime: 0.25,       // phút
+    clockTime: 0.25,
     clockIncrement: 0,
     minutes: 60,
     rated: true,
     variant: "standard",
-    intervalHours: 1,      // mỗi 1 giờ
+    intervalHours: 1,
   },
 };
 
-// === Utils ===
 function assertEnv() {
-  if (!config.oauthToken) throw new Error("OAUTH_TOKEN thiếu. Set trong Secrets/GitHub Actions.");
-  console.log("Debug: OAUTH_TOKEN length:", config.oauthToken.trim().length);
+  if (!config.oauthToken) {
+    throw new Error("OAUTH_TOKEN fehlt. Setze die Umgebungsvariable OAUTH_TOKEN.");
+  }
+  if (!config.teamId) {
+    throw new Error("TEAM ID fehlt. Setze die teamId in config.");
+  }
 }
 
+/** nächste volle Stunde UTC */
 function nextEvenUtcHour(from: Date): Date {
   const d = new Date(from);
   const h = d.getUTCHours();
@@ -33,34 +37,29 @@ function nextEvenUtcHour(from: Date): Date {
   return d;
 }
 
-// === Create Arena ===
 async function createArena(startDate: Date, nextLink: string) {
-  const body = new URLSearchParams({
-    name: config.arena.name(),
-    description: config.arena.description(nextLink),
-    clockTime: String(config.arena.clockTime),
-    clockIncrement: String(config.arena.clockIncrement),
-    minutes: String(config.arena.minutes),
-    rated: config.arena.rated ? "true" : "false",
-    variant: config.arena.variant,
-    startDate: startDate.toISOString(),
-    teamId: config.team,        // quan trọng: tạo trong team
-  });
+  const body = new URLSearchParams();
 
-  console.log("Creating arena on:", startDate.toISOString());
+  body.append("name", config.arena.name());
+  body.append("description", config.arena.description(nextLink));
+  body.append("clockTime", String(config.arena.clockTime));
+  body.append("clockIncrement", String(config.arena.clockIncrement));
+  body.append("minutes", String(config.arena.minutes));
+  body.append("rated", config.arena.rated ? "true" : "false");
+  body.append("variant", config.arena.variant);
+  body.append("teamId", config.teamId);          // ID team
+  body.append("teamTournament", "true");        // bắt buộc để tạo trong team
+  body.append("startDate", startDate.toISOString());
 
   if (config.dryRun) {
-    console.log("DRY RUN body:", Object.fromEntries(body));
+    console.log("DRY RUN Arena:", Object.fromEntries(body));
     return "dry-run";
   }
-
-  // Trim token để tránh lỗi HTTP header
-  const token = config.oauthToken.trim();
 
   const res = await fetch(`${config.server}/api/tournament`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${config.oauthToken}`,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "application/json",
     },
@@ -79,22 +78,23 @@ async function createArena(startDate: Date, nextLink: string) {
   return url;
 }
 
-// === Main ===
 async function main() {
   assertEnv();
 
   const now = new Date();
   const firstStart = nextEvenUtcHour(now);
+
   const arenasPerDay = Math.floor(24 / config.arena.intervalHours);
   const totalArenas = arenasPerDay * config.daysInAdvance;
 
-  console.log(`Creating ${totalArenas} arenas for team ${config.team}`);
+  console.log(`Creating ${totalArenas} arenas for team ${config.teamId}`);
 
   let prevUrl: string | null = null;
 
   for (let i = 0; i < totalArenas; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 60000)); // tránh rate limit
-    const startDate = new Date(firstStart.getTime() + i * config.arena.intervalHours * 3600 * 1000);
+    if (i > 0) await new Promise(resolve => setTimeout(resolve, 60000));
+
+    const startDate = new Date(firstStart.getTime() + i * config.arena.intervalHours * 60 * 60 * 1000);
     const arenaUrl = await createArena(startDate, prevUrl ?? "tba");
     if (arenaUrl) prevUrl = arenaUrl;
   }
